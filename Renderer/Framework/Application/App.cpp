@@ -69,6 +69,11 @@ bool App::InitApp()
     {
         return false;
     }
+    // 렌더링을 위한 리소스들을 생성.
+    if (!OnInit())
+    {
+        return false;
+    }
 
     // 초기화가 정상적으로 수행 되었음.
     return true;
@@ -79,6 +84,8 @@ bool App::InitApp()
 /// </summary>
 void App::TermApp()
 {
+    // 렌더링을 위해 생성 했던 리소스들 제거.
+    OnTerm();
     // Direct3D 12 종료 처리.
     TermD3D();
     // 윈도우 종료 처리.
@@ -574,6 +581,191 @@ void App::WaitGpu()
 
     // 카운터를 늘림.
     m_FenceCounter[m_FrameIndex]++;
+}
+
+bool App::OnInit()
+{
+    // 정점 버퍼 생성.
+    {
+        // 정점 데이터.
+        Vertex vertices[] = {
+            { DirectX::XMFLOAT3(-1.0f, -1.0f, 0.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) },
+            { DirectX::XMFLOAT3(1.0f, -1.0f, 0.0f), DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) },
+            { DirectX::XMFLOAT3(0.0f,  1.0f, 0.0f), DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) },
+        };
+
+        // 정점 버퍼를 GPU로 보내기 위한 리소스(ID3D12Resource)를 생성함.
+        // 1. 리소스를 생성하기 위한 힙 속성을 정의하는 힙 프로퍼티 생성.
+        D3D12_HEAP_PROPERTIES prop = {};
+        prop.Type = D3D12_HEAP_TYPE_UPLOAD;
+        prop.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        prop.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        prop.CreationNodeMask = 1;
+        prop.VisibleNodeMask = 1;
+
+        // 2. 리소스 속성을 정의하는 리소스 서술자 생성.
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Alignment = 0;
+        desc.Width = sizeof(vertices);
+        desc.Height = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        // 3. 힙 프로퍼티, 리소스 서술자를 사용해 리소스 생성.
+        // 클래스의 멤버 변수인 I3D312Resource 타입 ComPtr에 생성한 리소스를 받아줌.
+        auto hr = m_pDevice->CreateCommittedResource(
+            &prop,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(m_pVB.GetAddressOf()));
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        // 생성한 리소스를 CPU 단에서 사용하기 위해 로컬 변수에 매핑.
+        void* ptr = nullptr;
+        hr = m_pVB->Map(0, nullptr, &ptr);
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        // 매핑된 변수에 CPU 쪽에서 생성한 정점 데이터를 복사해 넣어줌.
+        memcpy(ptr, vertices, sizeof(vertices));
+
+        // 데이터를 채워 주었으므로 Unmap을 통해 다시 닫아줌.
+        m_pVB->Unmap(0, nullptr);
+
+        // 정점 버퍼 뷰 설정.
+        m_VBV.BufferLocation = m_pVB->GetGPUVirtualAddress();     // GPU의 가상 주소를 설정함.
+        m_VBV.SizeInBytes = static_cast<UINT>(sizeof(vertices));  // 정점 버퍼 전체 크기를 설정.
+        m_VBV.StrideInBytes = static_cast<UINT>(sizeof(Vertex));  // 정점 당 사이즈.
+    }
+
+    // 상수 버퍼용 디스크립터 힙 생성.
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+        desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;      // 상수 버퍼용 디스크립터 힙을 만들 것이기 때문에 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV를 지정함.
+        desc.NumDescriptors = 1 * FrameCount;                    // 더블 버퍼화를 위해 FrameCount 값을 곱해줌. 
+        desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;  // 렌더 타겟의 경우 쉐이더를 볼 필요가 없기 때문에 NONE으로 설정했으나, 상수 버퍼의 경우 쉐이더 내에서 사용하므로, 쉐이더에 보이는 상태로 만들어야 함. 
+        desc.NodeMask = 0;
+
+        auto hr = m_pDevice->CreateDescriptorHeap(
+            &desc,
+            IID_PPV_ARGS(m_pHeapCBV.GetAddressOf()));
+        if (FAILED(hr))
+        {
+            return false;
+        }
+    }
+
+    // 상수 버퍼 리소스 생성.
+    {
+        // 힙 속성 구조체.
+        D3D12_HEAP_PROPERTIES prop = {};
+        prop.Type = D3D12_HEAP_TYPE_UPLOAD; // 정점 쉐이더에서 사용하므로 UPLOAD로 설정.
+        prop.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        prop.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        prop.CreationNodeMask = 1;
+        prop.VisibleNodeMask = 1;
+
+        // 리소스 설정 구조체.
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Alignment = 0;
+        desc.Width = sizeof(Transform);     // 정점 버퍼의 크기는 Transform 구조체의 크기.
+        desc.Height = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        auto incrementSize = m_pDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+        for (auto i = 0; i < FrameCount; ++i)
+        {
+            // 리소스 생성.
+            auto hr = m_pDevice->CreateCommittedResource(
+                &prop,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(m_pCB[i].GetAddressOf()));
+            if (FAILED(hr))
+            {
+                return false;
+            }
+
+            // 방금 만든 리소스의 GPU 가상 주소를 가져옴.
+            auto address = m_pCB[i]->GetGPUVirtualAddress();
+            // 상수 버퍼 뷰가 저장될 디스크립터 힙의 시작 핸들을 가져옴.
+            auto handleCPU = m_pHeapCBV->GetCPUDescriptorHandleForHeapStart();
+            auto handleGPU = m_pHeapCBV->GetGPUDescriptorHandleForHeapStart();
+            // 생성한 상수 버퍼가 들어갈 오프셋 위치를 계산해줌. 위에서 GetDescriptorHandleIncrementSize() 함수를 통해 계산 했음.
+            handleCPU.ptr += incrementSize * i;
+            handleGPU.ptr += incrementSize * i;
+
+            // 상수 버퍼 뷰 설정.
+            m_CBV[i].HandleCPU = handleCPU;
+            m_CBV[i].HandleGPU = handleGPU;
+            m_CBV[i].Desc.BufferLocation = address;
+            m_CBV[i].Desc.SizeInBytes = sizeof(Transform);
+
+            // 상수 버퍼 뷰 생성. 디스크립터 힙의 오프셋 위치를 두 번째 인자로 넣어줌.
+            m_pDevice->CreateConstantBufferView(&m_CBV[i].Desc, handleCPU);
+
+            // 버퍼에 데이터를 밀어 넣기 위해 매핑.
+            hr = m_pCB[i]->Map(0, nullptr, reinterpret_cast<void**>(&m_CBV[i].pBuffer));
+            if (FAILED(hr))
+            {
+                return false;
+            }
+
+            auto eyePos = DirectX::XMVectorSet(0.0f, 0.0f, 5.0f, 0.0f);
+            auto targetPos = DirectX::XMVectorZero();
+            auto upward = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+            auto fovY = DirectX::XMConvertToRadians(37.5f);
+            auto aspect = static_cast<float>(m_Width) / static_cast<float>(m_Height);
+
+            // 변환 행렬 설정.
+            m_CBV[i].pBuffer->World = DirectX::XMMatrixIdentity();
+            m_CBV[i].pBuffer->View = DirectX::XMMatrixLookAtRH(eyePos, targetPos, upward);
+            m_CBV[i].pBuffer->Proj = DirectX::XMMatrixPerspectiveFovRH(fovY, aspect, 1.0f, 1000.0f);
+        }
+    }
+
+    return true;
+}
+
+void App::OnTerm()
+{
+    // 종료하기 전에 상수 버퍼와 정점 버퍼 등 렌더링을 위해 만들어준 리소스들을 Unmap하고, nullptr로 비워줌.
+    for (auto i = 0; i < FrameCount; ++i)
+    {
+        if (m_pCB[i].Get() != nullptr)
+        {
+            m_pCB[i]->Unmap(0, nullptr);
+            memset(&m_CBV[i], 0, sizeof(m_CBV[i]));
+        }
+        m_pCB[i].Reset();
+    }
+
+    m_pVB.Reset();
+    m_pPSO.Reset();
 }
 
 #pragma endregion

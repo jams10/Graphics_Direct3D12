@@ -7,4 +7,8 @@
   <ItemGroup>
     <ClInclude Include="Application\App.h" />
   </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="res\SimpleVS.hlsl" />
+    <FxCompile Include="res\SimplePS.hlsl" />
+  </ItemGroup>
 </Project>
