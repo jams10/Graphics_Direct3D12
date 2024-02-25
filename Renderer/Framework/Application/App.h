@@ -5,10 +5,12 @@
 #include <d3d12.h>    
 #include <dxgi1_4.h>  
 #include <wrl/client.h>
+#include <d3dcompiler.h>
 #include <DirectXMath.h> // 벡터, 행렬 연산을 위한 라이브러리.
  
 #pragma comment( lib, "d3d12.lib" )  
 #pragma comment( lib, "dxgi.lib" )  
+#pragma comment( lib, "d3dcompiler.lib" )
 
 template<typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 

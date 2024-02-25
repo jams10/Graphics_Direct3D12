@@ -748,6 +748,151 @@ bool App::OnInit()
         }
     }
 
+    // 루트 시그니처 생성.
+    {
+        auto flag = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        flag |= D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS;
+        flag |= D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS;
+        flag |= D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+        // 1. 루트 파라미터 생성.
+        D3D12_ROOT_PARAMETER param = {};
+        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        param.Descriptor.ShaderRegister = 0;
+        param.Descriptor.RegisterSpace = 0;
+        param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+        // 2. 루트 시그니처 서술자 구조체 생성.
+        D3D12_ROOT_SIGNATURE_DESC desc = {};
+        desc.NumParameters = 1;              // 루트 파라미터 배열 수.
+        desc.NumStaticSamplers = 0;          // 정적 샘플러 배열 수.
+        desc.pParameters = &param;           // 루트 파라미터 배열.
+        desc.pStaticSamplers = nullptr;      // 정적 샘플러 배열. 텍스쳐를 사용하지 않으므로 설정 하지 않았음.
+        desc.Flags = flag;
+
+        ComPtr<ID3DBlob> pBlob;
+        ComPtr<ID3DBlob> pErrorBlob;
+
+        // 3. 루트 시그니쳐 직렬화.
+        auto hr = m_pDevice->CreateRootSignature(
+            0,                                              // 노드 마스크.
+            pBlob->GetBufferPointer(),                      // 직렬화된 데이터에 대한 포인터.
+            pBlob->GetBufferSize(),                         // 직렬화된 데이터의 바이트 크기.
+            IID_PPV_ARGS(m_pRootSignature.GetAddressOf())); // 루트 시그니처 인터페이스의 GUID와 루트 시그니처를 저장하는 변수에 대한 포인터.
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        // 4. 루트 시그니쳐 생성.
+        hr = m_pDevice->CreateRootSignature(
+            0,
+            pBlob->GetBufferPointer(),
+            pBlob->GetBufferSize(),
+            IID_PPV_ARGS(m_pRootSignature.GetAddressOf()));
+        if (FAILED(hr))
+        {
+            return false;
+        }
+    }
+
+    // 그래픽스 파이프라인 스테이트 생성.
+    {
+        // 입력 element 설정 구조체. CPU에서 저장해 보내는 데이터와 GPU의 쉐이더 입력을 맞춰 줘야함.
+        D3D12_INPUT_ELEMENT_DESC elements[2];
+        elements[0].SemanticName = "POSITION";             // 시맨틱 이름.
+        elements[0].SemanticIndex = 0;                     // 시맨틱 번호 지정. ex) POSITION0, POSITION1 처럼 뒤에 들어가는 인덱스 번호.
+        elements[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;  // 하나의 구성 데이터 형식을 지정함.
+        elements[0].InputSlot = 0;                         // 입력 슬롯 번호. 유효 범위는 [0,5]. 이 샘플에서는 복수의 정점 버퍼를 취급하지 않기 때문에 0을 지정함.
+        elements[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT; // 각 요소간의 오프셋을 바이트로 지정. D3D12_APPEND_ALIGNED_ELEMENT를 지정하면 직전 요소 직후가 오프셋이 됨.
+        elements[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA; // 데이터 입력 단위. PER_VERTEX_DATA : 정점별 데이터, PER_INSTANCE_DATA : 인스턴스 당 데이터.
+        elements[0].InstanceDataStepRate = 0;                                    // 인스턴스 별 데이터 순회 횟수. 입력 요소가 정점별 데이터를 포함하는 경우, 0으로 설정.
+
+        elements[1].SemanticName = "COLOR";
+        elements[1].SemanticIndex = 0;
+        elements[1].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        elements[1].InputSlot = 0;
+        elements[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+        elements[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+        elements[1].InstanceDataStepRate = 0;
+
+        // 래스터라이즈 스테이트 설정 구조체.
+        D3D12_RASTERIZER_DESC descRS;
+        descRS.FillMode = D3D12_FILL_MODE_SOLID; // 그리기 시의 채우기 모드를 설정. WIREFRAME : 말 그대로 정점을 연결하는 선을 그림. SOLID : 정점으로 형성되는 삼각형으로 채워그림.
+        descRS.CullMode = D3D12_CULL_MODE_NONE;  // 특정 방향을 향하는 삼각형을 그리지 않도록 설정하는 모드. FRONT는 전면, BACK은 후면 삼각형을 그리지 않게 됨.
+        descRS.FrontCounterClockwise = FALSE;    // 전면이 반시계 방향인지 설정. FALSE의 경우 시계 방향으로 정점을 구성한 면이 전면이 됨.
+        descRS.DepthBias = D3D12_DEFAULT_DEPTH_BIAS; // 주어진 픽셀에 더할 깊이 값을 설정. 주로 전후 관계를 조정하는데 사용하며, 여기서는 사용하지 않기 때문에 기본 값으로 설정.
+        descRS.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP; // 픽셀 최대 깊이 bias 값을 설정. 사용하지 않기 때문에 기본 값으로 설정.
+        descRS.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS; // 픽셀의 기울기(gradient)에 따른 깊이 bias 값을 스케일하는 scalar 값. 그냥 기본 값으로 설정.
+        descRS.DepthClipEnable = FALSE;         // 거리에 근거한 클리핑을 할지 여부. 사용하지 않으니 FALSE로 설정.
+        descRS.MultisampleEnable = FALSE;       // 멀티샘플링 활성화 여부. 사용하지 않으니 FALSE로 설정.
+        descRS.AntialiasedLineEnable = FALSE;   // line 안티에일리어싱 활성화 여부. MultisampleEnable가 FALSE이고 선 그리기가 수행되는 경우에만 적용됨.
+        descRS.ForcedSampleCount = 0;           // UAV 그리기 또한 래스터라이즈 동안 샘플 수를 강제로 고정 값으로 만들어줌. 0은 샘플 수가 강제되지 않음을 나타냄.
+        descRS.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF; // Constervative Rasterization 활성화 여부를 설정.
+
+        // 렌더 타겟 블렌드 블렌딩 설정 구조체.
+        D3D12_RENDER_TARGET_BLEND_DESC descRTBS = {
+            FALSE, FALSE,
+            D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+            D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+            D3D12_LOGIC_OP_NOOP,
+            D3D12_COLOR_WRITE_ENABLE_ALL
+        };
+
+        // 블렌드 스테이트 설정 구조체.
+        D3D12_BLEND_DESC descBS;
+        descBS.AlphaToCoverageEnable = FALSE;   // AlphaToCoverageEnable 기능을 활성화하는 플래그. 픽셀 쉐이더의 알파 성분을 취득해서 멀티 샘플링 AA 처리를 적용하는 기능.
+        descBS.IndependentBlendEnable = FALSE;  // 렌더 타겟의 독립적인 블렌드 사용 여부. FALSE일 경우, RenderTaget[0]만 사용됨.
+        for (UINT i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+        {
+            descBS.RenderTarget[i] = descRTBS;
+        }
+
+        ComPtr<ID3DBlob> pVSBlob;
+        ComPtr<ID3DBlob> pPSBlob;
+
+        // 정점 쉐이더 읽기.
+        auto hr = D3DReadFileToBlob(L"SimpleVS.cso", pVSBlob.GetAddressOf());
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        // 픽셀 쉐이더 읽기.
+        hr = D3DReadFileToBlob(L"SimplePS.cso", pPSBlob.GetAddressOf());
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        // 파이프라인 스테이트 설정 구조체.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+        desc.InputLayout = { elements, _countof(elements) };
+        desc.pRootSignature = m_pRootSignature.Get();
+        desc.VS = { pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize() };
+        desc.PS = { pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize() };
+        desc.RasterizerState = descRS;
+        desc.BlendState = descBS;
+        desc.DepthStencilState.DepthEnable = FALSE;
+        desc.DepthStencilState.StencilEnable = FALSE;
+        desc.SampleMask = UINT_MAX;
+        desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        desc.NumRenderTargets = 1;
+        desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        desc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+
+        // 파이프라인 스테이트 생성.
+        hr = m_pDevice->CreateGraphicsPipelineState(
+            &desc,
+            IID_PPV_ARGS(m_pPSO.GetAddressOf()));
+        if (FAILED(hr))
+        {
+            return false;
+        }
+    }
+
     return true;
 }
 
